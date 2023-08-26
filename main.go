@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"io/ioutil"
 	"os"
 	"fmt"
 	"log"
 	"net/mail"
 	"strings"
 
-	"github.com/chrj/smtpd"
+	"example.com/smtpd"
 )
 
 var (
@@ -31,6 +30,7 @@ var (
 )
 
 func smtphandler(peer smtpd.Peer, env smtpd.Envelope) error {
+    var msg *mail.Message
 
 	type MailJSON struct {
 		Subject    string   `json:"subject"`
@@ -41,8 +41,6 @@ func smtphandler(peer smtpd.Peer, env smtpd.Envelope) error {
 	}
 
 	if *enableDebug {
-		log.Printf("env.Sender: %s", env.Sender)
-		log.Printf("env.Recipients: %s", env.Recipients)
 		log.Printf("env.Data: %s", env.Data)
 	}
 
@@ -54,27 +52,16 @@ func smtphandler(peer smtpd.Peer, env smtpd.Envelope) error {
 		return nil
 	}
 
-	subject := parseSubject(msg.Header.Get("Subject"))
-	if *enableDebug {
-		log.Printf("env.Data subject: %s", subject)
-	}
-
-	body, err := ioutil.ReadAll(msg.Body)
-	if err != nil {
-		log.Printf("error parsing body: %v", err)
-		return nil
-	}
-	if *enableDebug {
-		log.Printf("body: %s", body)
-	}
-
-	emailHTML, emailText, emailIsMultiPart, errbody := parseBody(msg.Header, body)
-	if errbody != nil {
-		log.Printf("error parsing body: %v", errbody)
+	subject, emailHTML, emailText, emailIsMultiPart, errMsg := parseMsg(msg)
+	if errMsg != nil {
+		log.Printf("error parsing msg: %v", errMsg)
 		return nil
 	}
 
 	if *enableDebug {
+		log.Printf("env.Sender: %s", env.Sender)
+		log.Printf("env.Recipients: %s", env.Recipients)
+		log.Printf("subject: %s", subject)
 		log.Printf("email text: %s", emailText)
 		log.Printf("html text: %s", emailHTML)
 		log.Printf("email multipart: %v", emailIsMultiPart)

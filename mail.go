@@ -3,144 +3,117 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"io/ioutil"
-	"mime"
 	"log"
-	"mime/multipart"
 	"net/mail"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"strings"
-
-	"github.com/paulrosania/go-charset/charset"
-	qprintable "github.com/sloonz/go-qprintable"
 )
-
-func hasEncoding(word string) bool {
-	return strings.Contains(word, "=?") && strings.Contains(word, "?=")
-}
-
-func parseSubject(subject string) string {
-	if !hasEncoding(subject) {
-		return subject
-	}
-
-	dec := mime.WordDecoder{}
-	sub, _ := dec.DecodeHeader(subject)
-	return sub
-}
 
 var headerSplitter = []byte("\r\n\r\n")
 
-// parseBody will accept a a raw body, break it into all its parts and then convert the
-// message to UTF-8 from whatever charset it may have.
-func parseBody(header mail.Header, body []byte) (html []byte, text []byte, isMultipart bool, err error) {
-	var mediaType string
-	var params map[string]string
-	mediaType, params, err = mime.ParseMediaType(header.Get("Content-Type"))
+func parseMsg(msg *mail.Message) (subject string, html string, text string, isMultipart bool, err error) {
+
+	// Display only the main headers of the message. The "From","To" and "Subject" headers
+	// have to be decoded if they were encoded using RFC 2047 to allow non ASCII characters.
+	// We use a mime.WordDecode for that.
+	dec := new(mime.WordDecoder)
+	from, _ := dec.DecodeHeader(msg.Header.Get("From"))
+	to, _ := dec.DecodeHeader(msg.Header.Get("To"))
+	subject, _ = dec.DecodeHeader(msg.Header.Get("Subject"))
+	if *enableDebug {
+		log.Println("From:", from)
+		log.Println("To:", to)
+		log.Println("Date:", msg.Header.Get("Date"))
+		log.Println("Subject:", subject)
+		log.Println("Content-Type:", msg.Header.Get("Content-Type"))
+	}
+
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
 	if err != nil {
+		log.Fatal(err)
+	}
+
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		log.Println("Not a multipart MIME message")
+		text = ""
+		isMultipart = false
 		return
 	}
-	partDisp := header.Get("Content-Disposition")
 
-	if strings.HasPrefix(mediaType, "multipart/") {
-		isMultipart = true
-		mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
-		for {
-			p, err := mr.NextPart()
-			if err == io.EOF {
-				break
-			}
+	// Recursivey parsed the MIME parts of the Body, starting with the first
+	// level where the MIME parts are separated with params["boundary"].
+	isMultipart = true
+	html, text, err = ParsePart(msg.Body, params["boundary"])
+	return
+
+}
+
+
+func ParsePart(mime_data io.Reader, boundary string) (html string, text string, errPart error) {
+	// Instantiate a new io.Reader dedicated to MIME multipart parsing
+	// using multipart.NewReader()
+	body := []byte("\n")
+	html = ""
+	text = ""
+	reader := multipart.NewReader(mime_data, boundary)
+	if reader == nil {
+		return
+	}
+	// Go through each of the MIME part of the message Body with NextPart(),
+	for {
+		new_part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("Error going through the MIME parts -", err)
+			break
+		}
+		mediaType, params, err := mime.ParseMediaType(new_part.Header.Get("Content-Type"))
+		if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+			// This is a new multipart to be handled recursively
+			return ParsePart(new_part, params["boundary"])
+		} else {
+			part, err := ioutil.ReadAll(new_part)
 			if err != nil {
 				break
 			}
-
-			slurp, err := ioutil.ReadAll(p)
-			if err != nil {
-				// error and no results to use
-				if len(slurp) == 0 {
-					break
-				}
+			content_transfer_encoding := strings.ToUpper(new_part.Header.Get("Content-Transfer-Encoding"))
+			log.Printf("Got mediatype %s and content-encoding %s for part %s", mediaType, content_transfer_encoding, string(part))
+			switch {
+					case strings.Compare(content_transfer_encoding, "BASE64") == 0:
+						decoded_content, err := base64.StdEncoding.DecodeString(string(part))
+						if err != nil {
+							log.Println("Error decoding base64 -", err)
+						} else {
+							body = decoded_content
+						}
+					case strings.Compare(content_transfer_encoding, "QUOTED-PRINTABLE") == 0:
+						decoded_content, err := ioutil.ReadAll(quotedprintable.NewReader(bytes.NewReader(part)))
+						if err != nil {
+							log.Println("Error decoding quoted-printable -", err)
+						} else {
+							// do something with the decoded content
+							body = decoded_content
+						}
+					default:
+						// Data is not encoded, do something with part_data
+						body = part
 			}
-
-			partMediaType, partParams, err := mime.ParseMediaType(p.Header.Get("Content-Type"))
-			if err != nil {
-				break
-			}
-
-			partDisposition := p.Header.Get("Content-Disposition")
-			dispo := strings.ToLower(partDisposition)
-
-			if *enableDebug {
-				log.Printf("Parsing multipart: %s with %s", partMediaType, dispo)
-			}
-
-			if !strings.Contains(dispo, "attachment") {
-				var htmlT, textT []byte
-				htmlT, textT, err = parsePart(partMediaType, dispo, partParams["charset"], p.Header.Get("Content-Transfer-Encoding"), slurp)
-				if len(htmlT) > 0 {
-					html = htmlT
-				}
-				if len(textT) > 0 {
-					text = textT
-				}
+			// deal with media type
+			switch {
+				case strings.Contains(mediaType, "text/html"):
+					html = string(body)
+				case strings.Contains(mediaType, "text/plain"):
+					text = string(body)
 			}
 		}
-	} else {
-
-		splitBody := bytes.SplitN(body, headerSplitter, 2)
-		if len(splitBody) < 2 {
-			isMultipart = false
-			text = body
-			return
-		}
-
-		body = splitBody[1]
-		html, text, err = parsePart(mediaType, partDisp, params["charset"], header.Get("Content-Transfer-Encoding"), body)
 	}
 	return
 }
 
-func parsePart(mediaType, partDisposition, charsetStr, encoding string, part []byte) (html, text []byte, err error) {
-	// deal with charset
-	if strings.ToLower(charsetStr) == "iso-8859-1" {
-		var cr io.Reader
-		cr, err = charset.NewReader("latin1", bytes.NewReader(part))
-		if err != nil {
-			return
-		}
-
-		part, err = ioutil.ReadAll(cr)
-		if err != nil {
-			return
-		}
-	}
-
-	// deal with encoding
-	var body []byte
-	switch strings.ToLower(encoding) {
-	case "quoted-printable":
-		dec := qprintable.NewDecoder(qprintable.WindowsTextEncoding, bytes.NewReader(part))
-		body, err = ioutil.ReadAll(dec)
-		if err != nil {
-			return
-		}
-	case "base64":
-		decoder := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(part))
-		body, err = ioutil.ReadAll(decoder)
-		if err != nil {
-			return
-		}
-	default:
-		body = part
-	}
-
-	// deal with media type
-	mediaType = strings.ToLower(mediaType)
-	switch {
-	case strings.Contains(mediaType, "text/html"):
-		html = body
-	case strings.Contains(mediaType, "text/plain"):
-		text = body
-	}
-	return
-}
