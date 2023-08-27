@@ -1,5 +1,3 @@
-[![Build Status](https://travis-ci.org/kost/smtp2mqtt.png)](https://travis-ci.org/kost/smtp2mqtt)
-[![Circle Status](https://circleci.com/gh/kost/smtp2mqtt.svg?style=shield&circle-token=:circle-token)](https://circleci.com/gh/kost/smtp2mqtt)
 
 # smtp2mqtt
 
