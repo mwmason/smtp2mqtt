@@ -16,6 +16,7 @@ import (
 
 var (
 	enableDebug  = flag.Bool("debug", false, "Enable debug messages")
+	optlogfile   = flag.String("log","","Write logs to named file")
 	welcomeMsg   = flag.String("welcome", "MQTT-forwarder ESMTP ready.", "Welcome message for SMTP session")
 	mqttServer   = flag.String("mqtt", "tcp://127.0.0.1:1883", "connect to specified MQTT server")
 	mqttUser     = flag.String("user", "", "MQTT username for connecting")
@@ -121,6 +122,15 @@ func main() {
 	var server *smtpd.Server
 
 	flag.Parse()
+
+	if *optlogfile != "" {
+		logFile, err := os.OpenFile(*optlogfile, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			log.Panic(err)
+		}
+		defer logFile.Close()
+		log.SetOutput(logFile)
+	}
 
 	if *displayVer {
 		fmt.Printf("version %s - %s\n", Version, CommitID)
